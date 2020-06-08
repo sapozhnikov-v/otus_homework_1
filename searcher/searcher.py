@@ -5,16 +5,19 @@ import ujson
 from selenium.webdriver import Remote
 from selenium.webdriver.chrome.options import Options
 
-
 yandex = {
     'url': 'http://yandex.ru/search/?text=',
-    'xpath_results': '//a[contains(@class, "link_cropped_no")]'
+    'xpath_results': '//a[contains(@class, "link_cropped_no")]',
+    'pagination_suffix': '&p='
 }
 google = {
     'url': 'http://google.com/search?q=',
-    'xpath_results': '//a[h3]'
+    'xpath_results': '//a[h3]',
+    'pagination_suffix': '&start='
 }
 selenium_url = 'http://localhost:4444/wd/hub'
+count_link = 0
+count_page = 0
 
 
 class Link:
@@ -53,33 +56,56 @@ def get_title_from_inner_text(text):
     return text.strip().split('\n')[0]
 
 
-def search(engine: dict, req, lim):
-    driver.get(f'{engine.get("url")}{req}')
+def search(driver, engine: dict, req, lim):
+    results = []
+    global count_page
+    is_pagination_on = False
+    results.extend(parse_page(driver, engine, req, lim, is_pagination_on))
+    if count_link < lim:
+        while True:
+            if 'google' in engine.get('url'):
+                count_page += 10
+            else:
+                count_page += 1
+            is_pagination_on = True
+            results.extend(parse_page(driver, engine, req, lim, is_pagination_on))
+            if count_link >= lim:
+                break
+    return results
+
+
+def parse_page(driver, engine, req, lim, is_pagination_on: bool):
+    if is_pagination_on:
+        driver.get(f'{engine.get("url")}{req}{engine.get("pagination_suffix")}{count_page}')
+    else:
+        driver.get(f'{engine.get("url")}{req}')
     time.sleep(1)
     links = driver.find_elements_by_xpath(engine.get('xpath_results'))
-    return parse_links(links, lim)
-
-
-def search_on_page(url, lim):
-    driver.get(url)
-    time.sleep(1)
-    links = driver.find_elements_by_tag_name('a')
-    return parse_links(links, lim)
+    return parse_links(links=links, lim=lim)
 
 
 def parse_links(links, lim):
+    global count_link
     results = []
-    count = 0
     for link in links:
-        if count >= lim:
+        if count_link >= lim:
             break
         title = get_title_from_inner_text(link.get_attribute('innerText'))
         url = link.get_attribute('href')
         if not url:
             continue
-        count += 1
+        count_link += 1
         results.append(Link(title, url))
     return results
+
+
+def search_on_page(driver, url, lim):
+    global count_link
+    count_link = 0
+    driver.get(url)
+    time.sleep(1)
+    links = driver.find_elements_by_tag_name('a')
+    return parse_links(links, lim)
 
 
 def check_empty_field(string):
@@ -130,10 +156,10 @@ def choose_from_three(string, first, second, third):
         choose_from_three(string, first, second, third)
 
 
-def get_links(engine, req, lim):
+def get_links(driver, engine, req, lim):
     if engine == 'yandex':
-        return search(yandex, req, lim)
-    return search(google, req, lim)
+        return search(driver, yandex, req, lim)
+    return search(driver, google, req, lim)
 
 
 def output_results(out, results):
@@ -152,22 +178,27 @@ def start_driver():
                   desired_capabilities=chrome_options.to_capabilities())
 
 
-if __name__ == '__main__':
+def main():
     request = read_request('Что ищем?')
     search_engine = choose_between_two('Где ищем?', 'yandex', 'google')
     limit = read_limit('Сколько нужно результатов?')
     recursion = choose_between_two('Забираем ссылки из найденного?', 'y', 'n')
     output = choose_from_three('В каком формате сохраняем?', 'json', 'csv', 'console')
+    print('Идёт поиск...')
 
     driver = start_driver()
 
-    search_results = get_links(search_engine, request, limit)
+    search_results = get_links(driver, search_engine, request, limit)
 
     if recursion == 'y':
         temp_results = []
         for result in search_results:
-            temp_results.extend(search_on_page(result.url, limit))
+            temp_results.extend(search_on_page(driver, result.url, limit))
         search_results.extend(temp_results)
 
     output_results(output, search_results)
     driver.close()
+
+
+if __name__ == '__main__':
+    main()
